@@ -1,13 +1,13 @@
-
+import aiohttp
 import asyncio
 import logging
 import os
 import signal
 import time
+import threading
+
 from datetime import timedelta
 from typing import Callable
-
-import aiohttp
 
 from .ratelimiting import NoRateLimiter
 
@@ -44,8 +44,10 @@ class AsyncHTTPExecuter:
         asyncio.run(self._run(call_count=call_count, duration=duration, run_end_condition_mode=run_end_condition_mode))
 
     async def _run(self, call_count=None, duration=None, run_end_condition_mode="or"):
-        orig_sigint_handler = signal.signal(signal.SIGINT, self._terminate)
-        orig_sigterm_handler = signal.signal(signal.SIGTERM, self._terminate)
+        if threading.current_thread() is threading.main_thread():
+            orig_sigint_handler = signal.signal(signal.SIGINT, self._terminate)
+            orig_sigterm_handler = signal.signal(signal.SIGTERM, self._terminate)
+        
         # disable all TCP limits for highly parallel loads
         conn = aiohttp.TCPConnector(limit=0)
         async with aiohttp.ClientSession(connector=conn) as session:
@@ -84,8 +86,9 @@ class AsyncHTTPExecuter:
             if self.finish_run_func:
                 self.finish_run_func()
 
-        signal.signal(signal.SIGINT, orig_sigint_handler)
-        signal.signal(signal.SIGTERM, orig_sigterm_handler)
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGINT, orig_sigint_handler)
+            signal.signal(signal.SIGTERM, orig_sigterm_handler)
 
     def _terminate(self, *args):
         if not self.terminate:

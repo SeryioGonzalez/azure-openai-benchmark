@@ -1,17 +1,21 @@
-import datetime
 import json
 import logging
 import numpy as np
+import sys
 import threading
 import time
 import traceback
 
-from prometheus_client import start_http_server, Gauge
+from prometheus_client import Gauge
 from typing import Optional
 
 from .oairequester import RequestStats
 
-logger = logging.getLogger()
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)-8s %(message)s",
+                    datefmt="%Y-%m-%d %H:%M:%S",
+    stream=sys.stdout  # Send logs to stdout for Docker
+)
 
 class _Samples:
     def __init__(self):
@@ -69,7 +73,6 @@ class _StatsAggregator(threading.Thread):
         log_request_content: bool = False,
         network_latency_adjustment: float = 0,
         prometheus_output: bool = True,
-        metrics_port: int = 8000,  # <--- configurable metrics port
         *args,
         **kwargs
     ):
@@ -82,7 +85,6 @@ class _StatsAggregator(threading.Thread):
         :param log_request_content: include request data in raw stats.
         :param network_latency_adjustment: subtracted from latency metrics.
         :param prometheus_output: whether to expose metrics via Prometheus.
-        :param metrics_port: the port on which Prometheus will scrape metrics (default 8000).
         """
         super(_StatsAggregator, self).__init__(*args, **kwargs)
 
@@ -94,105 +96,40 @@ class _StatsAggregator(threading.Thread):
         self.log_request_content = log_request_content
         self.network_latency_adjustment = network_latency_adjustment
         self.prometheus_output = prometheus_output
-        self.metrics_port = metrics_port
-
+        
         # ---------------------------
         # PROMETHEUS GAUGES
         # ---------------------------
-        self.g_requests_total = Gauge(
-            "azure_openai_requests_total",
-            "Number of completed requests"
-        )
-        self.g_requests_failed = Gauge(
-            "azure_openai_requests_failed_total",
-            "Number of failed requests"
-        )
-        self.g_requests_throttled = Gauge(
-            "azure_openai_requests_throttled_total",
-            "Number of throttled requests (HTTP 429)"
-        )
-        self.g_requests_per_minute = Gauge(
-            "azure_openai_requests_per_minute",
-            "Requests-per-minute in the sliding window"
-        )
-        self.g_e2e_latency_avg = Gauge(
-            "azure_openai_e2e_latency_avg",
-            "Average E2E latency in the sliding window"
-        )
-        self.g_e2e_latency_95th = Gauge(
-            "azure_openai_e2e_latency_95th",
-            "95th percentile E2E latency"
-        )
-        self.g_processing_requests_count = Gauge(
-            "azure_openai_processing_requests_count",
-            "Number of requests currently being processed"
-        )
-        self.g_context_per_minute = Gauge(
-            "azure_openai_context_per_minute",
-            "Context tokens used per minute in the window"
-        )
-        self.g_gen_per_minute = Gauge(
-            "azure_openai_gen_per_minute",
-            "Generated tokens per minute in the window"
-        )
-        self.g_tokens_per_minute = Gauge(
-            "azure_openai_tokens_per_minute",
-            "Total tokens (context + generated) per minute in the window"
-        )
-        self.g_context_tpr_avg = Gauge(
-            "azure_openai_context_tpr_avg",
-            "Average context tokens per response"
-        )
-        self.g_gen_tpr_avg = Gauge(
-            "azure_openai_gen_tpr_avg",
-            "Average generated tokens per response"
-        )
-        self.g_gen_tpr_10th = Gauge(
-            "azure_openai_gen_tpr_10th",
-            "10th percentile of generated tokens per response"
-        )
-        self.g_gen_tpr_90th = Gauge(
-            "azure_openai_gen_tpr_90th",
-            "90th percentile of generated tokens per response"
-        )
-        self.g_ttft_avg = Gauge(
-            "azure_openai_ttft_avg",
-            "Average time-to-first-token"
-        )
-        self.g_ttft_95th = Gauge(
-            "azure_openai_ttft_95th",
-            "95th percentile time-to-first-token"
-        )
-        self.g_tbt_avg = Gauge(
-            "azure_openai_tbt_avg",
-            "Average time-between-tokens (post first token)"
-        )
-        self.g_tbt_95th = Gauge(
-            "azure_openai_tbt_95th",
-            "95th percentile time-between-tokens"
-        )
-        self.g_util_avg = Gauge(
-            "azure_openai_util_avg",
-            "Average utilization"
-        )
-        self.g_util_95th = Gauge(
-            "azure_openai_util_95th",
-            "95th percentile utilization"
-        )
+        self.g_requests_total  = Gauge("requests_total", "Number of completed requests")
+        self.g_requests_failed = Gauge("requests_failed_total", "Number of failed requests")
+        self.g_requests_throttled = Gauge("throttled_requests", "Number of throttled requests (HTTP 429)")
+        self.g_requests_per_minute = Gauge("rpm", "Requests-per-minute in the sliding window")
+        self.g_e2e_latency_avg = Gauge("e2e_avg", "Average E2E latency in the sliding window")
+        self.g_e2e_latency_95th = Gauge("e2e_95th", "95th percentile E2E latency")
+        self.g_processing_requests_count = Gauge("processing_requests_count", "Number of requests currently being processed")
+        self.g_context_per_minute = Gauge("tpm_context", "Context tokens used per minute in the window")
+        self.g_gen_per_minute = Gauge("tpm_gen", "Generated tokens per minute in the window")
+        self.g_tokens_per_minute = Gauge("tokens_per_minute", "Total tokens (context + generated) per minute in the window")
+        self.g_context_tpr_avg = Gauge("context_tpr_avg", "Average context tokens per response")
+        self.g_gen_tpr_avg = Gauge("gen_tpr_avg", "Average generated tokens per response")
+        self.g_gen_tpr_10th = Gauge("gen_tpr_10th", "10th percentile of generated tokens per response")
+        self.g_gen_tpr_90th = Gauge("gen_tpr_90th", "90th percentile of generated tokens per response")
+        self.g_ttft_avg = Gauge("ttft_avg", "Average time-to-first-token")
+        self.g_ttft_95th = Gauge("ttft_95th", "95th percentile time-to-first-token")
+        self.g_tbt_avg = Gauge("tbt_avg", "Average time-between-tokens (post first token)")
+        self.g_tbt_95th = Gauge("tbt_95th", "95th percentile time-between-tokens")
+        self.g_util_avg = Gauge("util_avg", "Average utilization")
+        self.g_util_95th = Gauge("util_95th", "95th percentile utilization")
 
     def dump_raw_call_stats(self):
         """Dumps raw stats for each individual call within the aggregation window."""
-        logger.info(f"Raw call stats: {json.dumps(self.raw_stat_dicts)}")
+        logging.info(f"Raw call stats: {json.dumps(self.raw_stat_dicts)}")
 
     def run(self):
         """
-        Start the periodic aggregator thread. If prometheus_output is True,
-        we start the Prometheus HTTP server so it can scrape these Gauges.
+        Start the periodic aggregator thread.
         """
-        if self.prometheus_output:
-            logger.info(f"Starting Prometheus metrics server on port {self.metrics_port}")
-            start_http_server(self.metrics_port)
-
+        
         self.start_time = time.time()
         self.terminate = threading.Event()
         while not self.terminate.wait(self.dump_duration):
@@ -398,9 +335,9 @@ class _StatsAggregator(threading.Thread):
                         "95th": util_95th,
                     },
                 }
-                logger.info(json.dumps(j))
+                logging.info(json.dumps(j))
             else:
-                logger.info(
+                logging.info(
                     f"rpm: {rpm:<5} processing: {processing_requests_count:<4} "
                     f"completed: {self.total_requests_count:<5} failures: {self.total_failed_count:<4} "
                     f"throttled: {self.throttled_count:<4} requests: {self.total_requests_count:<5} "
